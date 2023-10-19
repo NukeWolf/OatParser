@@ -37,6 +37,12 @@
   ("var", VAR);
   ("global", GLOBAL);
 
+  ("bool", TBOOL);
+  ("true", TRUE);
+  ("false", FALSE);
+  ("new", NEW);
+  ("for", FOR);
+
   (* Symbols *)
   ( ";", SEMI);
   ( ",", COMMA);
@@ -53,7 +59,19 @@
   ( ")", RPAREN);
   ( "[", LBRACKET);
   ( "]", RBRACKET);
-  
+
+  ("<<", LTLT);
+  (">>", GTGT);
+  (">>>", GTGTGT);
+  ("<", LT);
+  ("<=", LTEQ);
+  (">", GT);
+  (">=", GTEQ);
+  ("!=", BANGEQ);
+  ("&", AMP);
+  ("|", PIPE);
+  ("[&]", BAND);
+  ("[|]", BOR);
   ]
 
 let (symbol_table : (string, Parser.token) Hashtbl.t) = Hashtbl.create 1024
@@ -129,6 +147,7 @@ rule token = parse
 
   | ';' | ',' | '{' | '}' | '+' | '-' | '*' | '=' | "==" 
   | "!=" | '!' | '~' | '(' | ')' | '[' | ']' 
+  | "<<" | ">>" | ">>>" | "<" | "<=" | ">" | ">=" | "!=" | "&" | "|" | "[&]" | "[|]"
     { create_token lexbuf }
 
   | _ as c { unexpected_char lexbuf c }
