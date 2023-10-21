@@ -330,7 +330,7 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
     let exp1_op, exp1_stream = cmp_exp_as c exp1 (cmp_ty exp1_ty) in
     let exp2_op, exp2_stream = cmp_exp_as c exp2 (cmp_ty exp2_ty) in
     let res_op = gensym (Astlib.ml_string_of_binop binop) in
-    (cmp_ty res_ty), Id res_op , (*([I(res_op, )]*) @ exp2_stream @ exp1_stream)
+    (cmp_ty res_ty), Id res_op , (*([I(res_op, )]*) exp2_stream @ exp1_stream
 
   | _ -> failwith "The rest of cmp_exp unimplemented"
 
@@ -373,7 +373,71 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
     let compiled_exp = cmp_exp c x in
     let ty, op, stream = compiled_exp in
     c,  [T (Ret (rt, Some op))] @ stream
-  | _ -> failwith "not implemented yet"
+  | Assn (lhs, exp) ->
+    (* lhs = exp; *)
+    begin match lhs.elt with
+      | Id id ->
+        let ty, op, stream = cmp_exp c exp in
+        let lhs_ty, lhs_op = Ctxt.lookup id c in
+        c, stream >@ [I (gensym id, Store (ty, op, lhs_op))]
+      | Index (arr, i) -> failwith "arrays not implemented yet"
+      | _ -> failwith "program is not well-formed"
+    end
+  | Decl (id, exp) ->
+    (* var id = exp; *)
+    let ty, op, stream = cmp_exp c exp in
+    let uid = gensym id in
+    let uid2 = gensym id in (* TODO is this necessary? *)
+    let new_ctxt = Ctxt.add c id (Ptr ty, Id uid) in
+    (* you will need to emit Allocas in the
+     entry block of the current function using the E() constructor *)
+    let alloca = [E (uid, Alloca ty)] in
+    new_ctxt, alloca >@ stream >@ [I (uid2, Store (ty, op, Id uid))]
+  | SCall (id, es) -> failwith "not implemented yet -- TODO wait until call exp"
+  | If (exp, block, else_stmt) ->
+    let ty, op, stream = cmp_exp c exp in
+    let true_body = cmp_block c rt block in
+    let false_body = cmp_block c rt else_stmt in
+
+    let true_label = gensym "true_label" in
+    let false_label = gensym "false_label" in
+    let end_false_label = gensym "end_false_label" in
+
+    (c,
+      stream >@
+
+      [T (Cbr (op, true_label, false_label))] >@
+
+      [L true_label] >@
+      true_body >@
+      [T (Br end_false_label)] >@
+
+      [L false_label] >@
+      false_body >@
+      [T (Br end_false_label)] >@
+
+      [L end_false_label]
+    )
+  | For (vdecls, expopt, stmtopt, block) -> failwith "not implemented yet"
+  | While (exp, block) ->
+    let ty, op, stream = cmp_exp c exp in
+    let while_body = cmp_block c rt block in
+    let start_while_label = gensym "start_while_label" in
+    let end_while_label = gensym "end_while_label" in
+    let start_while_body_label = gensym "start_while_body_label" in
+
+    (c,
+      stream >@ 
+
+      [L start_while_label] >@
+      [T (Cbr (op, start_while_body_label, end_while_label))] >@ 
+
+      [L start_while_body_label] >@ 
+      while_body >@ 
+      [T (Br start_while_label)] >@
+
+      [L end_while_label]
+    )
 
 
 (* Compile a series of statements *)
