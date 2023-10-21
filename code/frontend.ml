@@ -307,6 +307,26 @@ let str_arr_ty s = Array(1 + String.length s, I8)
 
 *)
 
+
+let ast_binop_to_ll_insn (ast_binop : Ast.binop) (res_ty: Ll.ty) (op1:Ll.operand) (op2:Ll.operand): Ll.insn =
+  match ast_binop with 
+    | Add -> Binop (Add,res_ty,op1,op2)
+    | Mul -> Binop (Mul,res_ty,op1,op2)
+    | Sub -> Binop (Sub,res_ty,op1,op2)
+    | Shl -> Binop (Shl,res_ty,op1,op2)
+    | Shr -> Binop (Lshr,res_ty,op1,op2)
+    | Sar -> Binop (Ashr,res_ty,op1,op2)
+    | IAnd -> Binop (And,res_ty,op1,op2)
+    | IOr ->  Binop (Or,res_ty,op1,op2)
+    | Eq -> Icmp (Eq,res_ty,op1,op2)
+    | Neq -> Icmp (Ne,res_ty,op1,op2)
+    | Lt -> Icmp (Slt,res_ty,op1,op2)
+    | Lte -> Icmp (Sle,res_ty,op1,op2)
+    | Gt -> Icmp (Sgt,res_ty,op1,op2)
+    | Gte -> Icmp (Sge,res_ty,op1,op2)
+    | And -> failwith "boolean and unimplemeted"
+    | Or -> failwith "boolean or unimplemeted"
+
 let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
   let cmp_exp_as (c:Ctxt.t) (exp:Ast.exp node) (newty : Ll.ty) : Ll.operand * stream = 
     let llty,llop,stream = cmp_exp c exp in 
@@ -330,7 +350,17 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
     let exp1_op, exp1_stream = cmp_exp_as c exp1 (cmp_ty exp1_ty) in
     let exp2_op, exp2_stream = cmp_exp_as c exp2 (cmp_ty exp2_ty) in
     let res_op = gensym (Astlib.ml_string_of_binop binop) in
-    (cmp_ty res_ty), Id res_op , (*([I(res_op, )]*) exp2_stream @ exp1_stream
+    (cmp_ty res_ty), Id res_op , 
+    ([I(res_op, (ast_binop_to_ll_insn binop (cmp_ty res_ty) exp1_op exp2_op ))] 
+    @ exp2_stream @ exp1_stream)
+
+  | Ast.Uop (unop, exp) ->
+    let unop_types = typ_of_unop unop in
+    let exp_ty,res_ty = unop_types in
+    failwith "WIP"
+  | Ast.Id id -> 
+    let ty, op = (Ctxt.lookup id c) in
+    ty, op , []
 
   | _ -> failwith "The rest of cmp_exp unimplemented"
 
