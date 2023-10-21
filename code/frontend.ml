@@ -306,11 +306,32 @@ let str_arr_ty s = Array(1 + String.length s, I8)
      correspond to gids that don't quite have the type you want
 
 *)
+
 let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
+  let cmp_exp_as (c:Ctxt.t) (exp:Ast.exp node) (newty : Ll.ty) : Ll.operand * stream = 
+    let llty,llop,stream = cmp_exp c exp in 
+    if (llty == newty) then
+      llop,stream
+    else
+      let newOp = gensym "bitcast" in
+      Id newOp, stream @ [I( newOp , Bitcast (llty, llop, newty))]
+
+  in
     match exp.elt with
   | Ast.CInt i  -> I64, Const i, []
   | Ast.CNull t -> cmp_ty (Ast.TRef t), Null, []
   | Ast.Call (f, es) -> cmp_call c f es
+
+  | Ast.CBool true -> I1, Const 1L, []
+  | Ast.CBool false -> I1, Const 0L, []
+  | Ast.Bop (binop,exp1,exp2) -> 
+    let binop_types = typ_of_binop binop in
+    let exp1_ty,exp2_ty,res_ty = binop_types in
+    let exp1_op, exp1_stream = cmp_exp_as c exp1 (cmp_ty exp1_ty) in
+    let exp2_op, exp2_stream = cmp_exp_as c exp2 (cmp_ty exp2_ty) in
+    let res_op = gensym (Astlib.ml_string_of_binop binop) in
+    (cmp_ty res_ty), Id res_op , (*([I(res_op, )]*) @ exp2_stream @ exp1_stream)
+
   | _ -> failwith "The rest of cmp_exp unimplemented"
 
 and cmp_call (c:Ctxt.t) (exp:Ast.exp node) (es:Ast.exp node list) : Ll.ty * Ll.operand * stream =
@@ -351,7 +372,7 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
   | Ret (Some x) ->
     let compiled_exp = cmp_exp c x in
     let ty, op, stream = compiled_exp in
-    c, stream @ [T (Ret (rt, Some op))] 
+    c,  [T (Ret (rt, Some op))] @ stream
   | _ -> failwith "not implemented yet"
 
 
