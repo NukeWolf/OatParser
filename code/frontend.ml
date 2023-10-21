@@ -346,7 +346,13 @@ and cmp_call (c:Ctxt.t) (exp:Ast.exp node) (es:Ast.exp node list) : Ll.ty * Ll.o
 
  *)
 let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
-  failwith "cmp_stmt not implemented"
+  match stmt.elt with
+  | Ret None -> c, [T (Ret (rt, None))]
+  | Ret (Some x) ->
+    let compiled_exp = cmp_exp c x in
+    let ty, op, stream = compiled_exp in
+    c, [T (Ret (rt, Some op))] @ stream
+  | _ -> failwith "not implemented yet"
 
 
 (* Compile a series of statements *)
