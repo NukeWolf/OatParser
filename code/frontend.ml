@@ -346,7 +346,12 @@ and cmp_call (c:Ctxt.t) (exp:Ast.exp node) (es:Ast.exp node list) : Ll.ty * Ll.o
 
  *)
 let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
-  failwith "cmp_stmt not implemented"
+  begin match stmt.elt with
+    | Ret Some(exp) -> 
+      (match (cmp_exp c exp) with ty,op,str ->
+        c , str @ [ T(Ret (ty, Some op)) ] )
+    | failwith
+  end
 
 
 (* Compile a series of statements *)
@@ -408,7 +413,19 @@ let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
    4. Use cfg_of_stream to produce a LLVMlite cfg from
  *)
 let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) list =
-  failwith "cmp_fdecl not implemented"
+  (*args and return type*)
+  let rt_ty_ll = (cmp_ret_ty f.elt.frtyp) in
+  let f_types = (List.map (fun( ty,id ) -> cmp_ty ty) f.elt.args) in
+  let params = List.map (fun( ty,id ) -> id) f.elt.args in
+
+  (*Setup new context by adding in local variables and the function itself TODO: Verify if this is right*)
+  let arg_ctxt = (List.fold_left (fun (ce : Ctxt.t) (ty,id) -> (Ctxt.add ce id ((cmp_ty ty), Id id )) ) c f.elt.args) in
+  let arg_fun_ctxt = (Ctxt.add arg_ctxt f.elt.fname (Ptr (Fun (f_types, rt_ty_ll)), Gid f.elt.fname) ) in
+
+  let ins_stream = cmp_block arg_fun_ctxt rt_ty_ll f.elt.body in
+  let f_cfg = cfg_of_stream ins_stream in
+  match f_cfg with cfg, gdecl_list -> 
+    { f_ty = (f_types , rt_ty_ll); f_param = params; f_cfg = cfg}, gdecl_list
 
 
 (* Compile a global initializer, returning the resulting LLVMlite global
