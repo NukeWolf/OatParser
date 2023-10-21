@@ -378,7 +378,23 @@ let cmp_function_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
    in well-formed programs. (The constructors starting with C).
 *)
 let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
-    failwith "cmp_global_ctxt unimplemented"
+    let cmp_global_ctxt_helper (c:Ctxt.t) (p:Ast.decl) =
+      match p with
+        | Ast.Gvdecl { elt=gd } ->
+          let ty =
+            begin match gd.init.elt with
+              | CNull t -> cmp_ty (Ast.TRef t)
+              | CBool _ -> I1
+              | CInt _ -> I64
+              | CStr _ -> Ptr (cmp_rty Ast.RString)
+              | _ -> failwith "not implemented yet"
+            end
+          in
+          let pty = Ptr ty in
+          Ctxt.add c gd.name (pty, Gid gd.name)
+        | _ -> c
+    in
+    List.fold_left cmp_global_ctxt_helper c p
 
 (* Compile a function declaration in global context c. Return the LLVMlite cfg
    and a list of global declarations containing the string literals appearing
@@ -414,6 +430,11 @@ let rec cmp_gexp (c:Ctxt.t) (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.gdecl) li
     let ll_ty = str_arr_ty s in
     let cast = GBitcast (Ptr ll_ty, GGid gid, Ptr I8) in
     (Ptr I8, cast), [gid, (ll_ty, GString s)]
+
+  | CBool true -> (I1, GInt 1L), []
+  | CBool false -> (I1, GInt 0L), []
+  | CInt i -> (I64, GInt i), []
+
   | _ -> failwith "cmp_gexp not implemented"
 
 
