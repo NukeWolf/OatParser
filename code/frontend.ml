@@ -308,7 +308,7 @@ let str_arr_ty s = Array(1 + String.length s, I8)
 *)
 
 
-let ast_binop_to_ll_insn (ast_binop : Ast.binop) (res_ty: Ll.ty) (op1:Ll.operand) (op2:Ll.operand): Ll.insn =
+let ast_binop_to_ll_insn (ast_binop : Ast.binop) (res_ty: Ll.ty) (op1_ty:Ll.ty) (op1:Ll.operand) (op2:Ll.operand): Ll.insn =
   match ast_binop with 
     | Add -> Binop (Add,res_ty,op1,op2)
     | Mul -> Binop (Mul,res_ty,op1,op2)
@@ -318,14 +318,21 @@ let ast_binop_to_ll_insn (ast_binop : Ast.binop) (res_ty: Ll.ty) (op1:Ll.operand
     | Sar -> Binop (Ashr,res_ty,op1,op2)
     | IAnd -> Binop (And,res_ty,op1,op2)
     | IOr ->  Binop (Or,res_ty,op1,op2)
-    | Eq -> Icmp (Eq,res_ty,op1,op2)
-    | Neq -> Icmp (Ne,res_ty,op1,op2)
-    | Lt -> Icmp (Slt,res_ty,op1,op2)
-    | Lte -> Icmp (Sle,res_ty,op1,op2)
-    | Gt -> Icmp (Sgt,res_ty,op1,op2)
-    | Gte -> Icmp (Sge,res_ty,op1,op2)
-    | And -> failwith "boolean and unimplemeted"
-    | Or -> failwith "boolean or unimplemeted"
+    | Eq -> Icmp (Eq,op1_ty,op1,op2)
+    | Neq -> Icmp (Ne,op1_ty,op1,op2)
+    | Lt -> Icmp (Slt,op1_ty,op1,op2)
+    | Lte -> Icmp (Sle,op1_ty,op1,op2)
+    | Gt -> Icmp (Sgt,op1_ty,op1,op2)
+    | Gte -> Icmp (Sge,op1_ty,op1,op2)
+    | And -> Binop (And,res_ty,op1,op2)
+    | Or -> Binop (Or,res_ty,op1,op2)
+
+let ast_unop_to_ll_insn (ast_unop : Ast.unop) (res_ty: Ll.ty) (op_ty:Ll.ty) (op:Ll.operand): Ll.insn =
+  match ast_unop with 
+    | Neg -> Binop(Mul, res_ty, op, Const(-1L))
+    | Bitnot -> Binop(Xor, res_ty, op, Const (-1L))
+    | Lognot  -> Binop(Xor, res_ty, op, Const (1L))
+
 
 let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
   let cmp_exp_as (c:Ctxt.t) (exp:Ast.exp node) (newty : Ll.ty) : Ll.operand * stream = 
@@ -334,10 +341,10 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
       llop,stream
     else
       let newOp = gensym "bitcast" in
-      Id newOp, stream @ [I( newOp , Bitcast (llty, llop, newty))]
+      Id newOp, stream >@ [I( newOp , Bitcast (llty, llop, newty))]
 
   in
-    match exp.elt with
+  match exp.elt with
   | Ast.CInt i  -> I64, Const i, []
   | Ast.CNull t -> cmp_ty (Ast.TRef t), Null, []
   | Ast.Call (f, es) -> cmp_call c f es
@@ -351,21 +358,45 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
     let exp2_op, exp2_stream = cmp_exp_as c exp2 (cmp_ty exp2_ty) in
     let res_op = gensym (Astlib.ml_string_of_binop binop) in
     (cmp_ty res_ty), Id res_op , 
-    ([I(res_op, (ast_binop_to_ll_insn binop (cmp_ty res_ty) exp1_op exp2_op ))] 
+    ([I(res_op, (ast_binop_to_ll_insn binop (cmp_ty res_ty) (cmp_ty exp1_ty) exp1_op exp2_op ))] 
     @ exp2_stream @ exp1_stream)
 
   | Ast.Uop (unop, exp) ->
     let unop_types = typ_of_unop unop in
     let exp_ty,res_ty = unop_types in
-    failwith "WIP"
+    let exp1_op, exp1_stream = cmp_exp_as c exp (cmp_ty exp_ty) in
+    let res_op = gensym (Astlib.ml_string_of_unop unop) in
+    (cmp_ty res_ty), Id res_op,
+    exp1_stream >@ [I(res_op, (ast_unop_to_ll_insn unop (cmp_ty res_ty) (cmp_ty exp_ty) exp1_op))]
+    
   | Ast.Id id -> 
     let ty, op = (Ctxt.lookup id c) in
-    ty, op , []
-
+    let res_op = gensym "load_id" in 
+    Printf.printf "%s" id;
+    begin match ty with
+      | Ptr (newty) -> newty, Id res_op , [I(res_op, Load (ty, op))]
+      | _ -> ty, op, []
+      (* | _ -> failwith "Load function expected a pointer or id" *)
+    end
+    
   | _ -> failwith "The rest of cmp_exp unimplemented"
 
 and cmp_call (c:Ctxt.t) (exp:Ast.exp node) (es:Ast.exp node list) : Ll.ty * Ll.operand * stream =
-  failwith "cmp_call unimplemented"
+  let fun_id = match exp.elt with 
+                | Id id -> id
+                | _ -> failwith "given exp node is not an id"
+  in
+  let ty, op = Ctxt.lookup_function fun_id c in
+  let res_op = gensym "function_result" in 
+  let args_fold_helper = fun (acc_operands, acc_stream : (Ll.ty * Ll.operand) list * stream) (arg_exp:Ast.exp node) ->
+    let ty, op, stream = cmp_exp c arg_exp in
+    acc_operands @ [(ty,op)] , stream >@ acc_stream
+  in
+  let arg_list, arg_stream = List.fold_left args_fold_helper ([],[]) es in
+  match ty with 
+    | Ptr(Fun (args, ret)) -> (ret, Id res_op , arg_stream >@ [I(res_op, Call(ret, op, arg_list))])
+    | _ -> failwith "Gid not attributed to a function pointer"
+  
 
 (* Feel free to add more recursive functions here *)
 
@@ -423,7 +454,10 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
      entry block of the current function using the E() constructor *)
     let alloca = [E (uid, Alloca ty)] in
     new_ctxt, alloca >@ stream >@ [I (uid2, Store (ty, op, Id uid))]
-  | SCall (id, es) -> failwith "not implemented yet -- TODO wait until call exp"
+  | SCall (id, es) -> 
+    let _, _, stream = cmp_exp c (Ast.no_loc (Ast.Call(id,es))) in
+    c, stream
+
   | If (exp, block, else_stmt) ->
     let ty, op, stream = cmp_exp c exp in
     let true_body = cmp_block c rt block in
@@ -448,7 +482,44 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
 
       [L end_false_label]
     )
-  | For (vdecls, expopt, stmtopt, block) -> failwith "not implemented yet"
+  | For (vdecls, expopt, stmtopt, block) -> 
+    let for_check_label = gensym "for_check_label" in
+    let for_body_label = gensym "for_body_label" in
+    let for_end_label = gensym "for_end_label" in
+
+    let var_stream_helper = fun (acc_c, acc_stream : Ctxt.t * stream) (vd:Ast.vdecl) -> 
+      let new_c, new_stream = (cmp_stmt acc_c Ll.Void {elt=Decl(vd); loc=Range.norange}) in
+      new_c, acc_stream >@ new_stream
+    in
+    let decl_ctxt, decl_stream = List.fold_left var_stream_helper (c,[]) vdecls in
+
+    let exp_stream = match expopt with 
+      | Some (exp) -> 
+        let ty,op,stream = cmp_exp decl_ctxt exp in
+        stream >@
+        [T (Cbr (op, for_body_label, for_end_label))]
+      | None ->  
+        [T (Br for_body_label)]
+    in
+    let body_stream = cmp_block decl_ctxt rt block in
+    let for_action_ctxt, for_action_stream = match stmtopt with
+      | Some (stmt) -> cmp_stmt decl_ctxt rt stmt
+      | None -> decl_ctxt, []
+    in
+ 
+    (for_action_ctxt,
+      decl_stream >@
+      [T (Br for_check_label)] >@
+      [L for_check_label] >@
+      exp_stream >@
+
+      [L for_body_label] >@
+      body_stream >@
+      for_action_stream >@
+      [T (Br for_check_label)] >@
+
+      [L for_end_label] 
+      )
   | While (exp, block) ->
     let ty, op, stream = cmp_exp c exp in
     let while_body = cmp_block c rt block in
@@ -457,9 +528,9 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
     let start_while_body_label = gensym "start_while_body_label" in
 
     (c,
-      stream >@ 
-
+      [T (Br start_while_label)] >@
       [L start_while_label] >@
+      stream >@ 
       [T (Cbr (op, start_while_body_label, end_while_label))] >@ 
 
       [L start_while_body_label] >@ 
@@ -535,10 +606,22 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
   let params = List.map (fun( ty,id ) -> id) f.elt.args in
 
   (*Setup new context by adding in local variables and the function itself TODO: Verify if this is right*)
-  let arg_ctxt = (List.fold_left (fun (ce : Ctxt.t) (ty,id) -> (Ctxt.add ce id ((cmp_ty ty), Id id )) ) c f.elt.args) in
+  let arg_ctxt, arg_stream = 
+    (List.fold_left 
+      (fun (acc_c, acc_stream: Ctxt.t * stream) (ty,id) -> 
+        let new_arg_op = gensym id in
+        (Ctxt.add acc_c id (Ptr((cmp_ty ty)), Id new_arg_op )), 
+        acc_stream >@ 
+          [E (new_arg_op, Alloca (cmp_ty ty));
+           I (new_arg_op, Store((cmp_ty ty), Id id, Id new_arg_op))
+          ] 
+      ) 
+      (c,[])
+      f.elt.args) 
+  in
   let arg_fun_ctxt = (Ctxt.add arg_ctxt f.elt.fname (Ptr (Fun (f_types, rt_ty_ll)), Gid f.elt.fname) ) in
 
-  let ins_stream = cmp_block arg_fun_ctxt rt_ty_ll f.elt.body in
+  let ins_stream = arg_stream >@ (cmp_block arg_fun_ctxt rt_ty_ll f.elt.body) in
   let f_cfg = cfg_of_stream ins_stream in
   match f_cfg with cfg, gdecl_list -> 
     { f_ty = (f_types , rt_ty_ll); f_param = params; f_cfg = cfg}, gdecl_list
