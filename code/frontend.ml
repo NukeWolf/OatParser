@@ -349,6 +349,52 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
   | Ast.CNull t -> cmp_ty (Ast.TRef t), Null, []
   | Ast.Call (f, es) -> cmp_call c f es
 
+  | Ast.CStr str -> 
+    let gid = gensym "str" in
+    let raw_gid = gensym "raw_str" in
+    let local_str = gensym "local_str" in
+    let ll_ty = str_arr_ty str in
+    let cast = GBitcast (Ptr ll_ty, GGid raw_gid, Ptr I8) in
+    Ptr I8, Id local_str, [
+      I (local_str, Load (Ptr(Ptr(I8)), Gid gid));
+      G (gid, (Ptr I8, cast));
+      G (raw_gid, (ll_ty, GString str))
+      ]
+
+
+  | Ast.CArr (ty, elements) -> 
+    let arr_ty, arr_op, arr_stream = oat_alloc_array ty (Const (Int64.of_int (List.length elements))) in
+    let arr_fill_stream,_ = List.fold_left (fun (acc_stream, ind:stream * int) (exp: Ast.exp node) ->
+        let exp_ty, exp_op, exp_stream = cmp_exp c exp in
+        let elm_ptr_op = gensym "ptr" in
+        acc_stream >@ exp_stream >@ [
+          I(gensym "store", Store((cmp_ty ty), exp_op, Id elm_ptr_op));
+          I(elm_ptr_op, Gep (arr_ty, arr_op, [Const 0L; Const 1L; Const (Int64.of_int ind)]))
+        ], (ind + 1)
+      )
+      ([],0)
+      elements
+    in
+    arr_ty, arr_op, arr_stream >@ arr_fill_stream
+  | Ast.Index (arr, index) -> 
+    let index_ty, index_op, index_stream = cmp_exp c index in
+    let arr_ty, arr_op, arr_stream = cmp_exp c arr in
+    let val_ty = match arr_ty with 
+      | Ptr (Struct([_; Array( _, ty)])) -> ty
+      | _ -> failwith (string_of_ty arr_ty)
+    in
+    let res_op_ptr = gensym "arr_index_ptr" in
+    let res_op = gensym "arr_val" in 
+    val_ty, Id res_op, index_stream >@ arr_stream >@ [
+      I(res_op, Load(Ptr(val_ty), Id res_op_ptr));
+      I(res_op_ptr, Gep (arr_ty, arr_op, [Const 0L; Const 1L; index_op]))
+    ]
+  
+  | Ast.NewArr (ty, len_exp) ->
+    let exp_ty, exp_op, exp_stream = cmp_exp c len_exp in
+    let arr_ty, arr_op, arr_stream = oat_alloc_array ty exp_op in
+    arr_ty, arr_op, exp_stream >@ arr_stream
+
   | Ast.CBool true -> I1, Const 1L, []
   | Ast.CBool false -> I1, Const 0L, []
   | Ast.Bop (binop,exp1,exp2) -> 
@@ -372,7 +418,7 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
   | Ast.Id id -> 
     let ty, op = (Ctxt.lookup id c) in
     let res_op = gensym "load_id" in 
-    Printf.printf "%s" id;
+    (* Printf.printf "%s" id; *)
     begin match ty with
       | Ptr (newty) -> newty, Id res_op , [I(res_op, Load (ty, op))]
       | _ -> ty, op, []
@@ -441,7 +487,16 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
         let ty, op, stream = cmp_exp c exp in
         let lhs_ty, lhs_op = Ctxt.lookup id c in
         c, stream >@ [I (gensym id, Store (ty, op, lhs_op))]
-      | Index (arr, i) -> failwith "arrays not implemented yet"
+      | Index (arr, i) -> 
+        let ty, op, stream = cmp_exp c exp in
+        let index_ty, index_op, index_stream = cmp_exp c i in
+        let arr_ty, arr_op, arr_stream = cmp_exp c arr in
+        let res_op_ptr = gensym "arr_index_ptr" in
+        let res_op = gensym "arr_val" in 
+        c, stream >@ index_stream >@ arr_stream >@ [
+        I(res_op, Store(ty, op , Id res_op_ptr));
+        I(res_op_ptr, Gep (arr_ty, arr_op, [Const 0L; Const 1L; index_op]))
+    ]
       | _ -> failwith "program is not well-formed"
     end
   | Decl (id, exp) ->
@@ -579,6 +634,7 @@ let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
               | CBool _ -> I1
               | CInt _ -> I64
               | CStr _ -> Ptr (cmp_rty Ast.RString)
+              | CArr(t,_) -> Ptr (cmp_rty (Ast.RArray t))
               | _ -> failwith "not implemented yet"
             end
           in
@@ -650,6 +706,23 @@ let rec cmp_gexp (c:Ctxt.t) (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.gdecl) li
   | CBool true -> (I1, GInt 1L), []
   | CBool false -> (I1, GInt 0L), []
   | CInt i -> (I64, GInt i), []
+  | CArr (ty, elements ) -> 
+    let gid = gensym "g_array" in
+    let length = (List.length elements) in 
+
+    let oat_arr_ty = (cmp_rty (Ast.RArray ty)) in
+    let ll_ty = Struct [I64; Array(length, (cmp_ty ty))] in
+
+    let cast = GBitcast (Ptr ll_ty, GGid gid, Ptr oat_arr_ty) in
+    let ginits ,gdecls = List.fold_left 
+    (fun (acc_init, acc_decl : Ll.gdecl list * (Ll.gid * Ll.gdecl) list) (elt : Ast.exp node) ->
+      let ginit, gdecls = cmp_gexp c elt in
+      acc_init @ [ginit], acc_decl @ gdecls
+    )
+    ([],[])
+    elements
+    in 
+    (Ptr oat_arr_ty, cast), gdecls @ [gid, (ll_ty, GStruct [(I64, GInt(Int64.of_int length)); (Array(length, (cmp_ty ty)) ,GArray ginits) ])]
 
   | _ -> failwith "cmp_gexp not implemented"
 
